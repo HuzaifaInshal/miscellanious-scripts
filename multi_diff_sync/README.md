@@ -1,16 +1,35 @@
 # Multi-Folder Git Diff Sync (`multi_diff_sync`)
 
-Designed for projects and monorepos where multiple service folders (like `FE` and `BE`) and a utility folder (`file-handler`) sit side-by-side at the same directory level, specifically to transfer changes across **two DIFFERENT repositories** sharing the same folder structure:
+Designed to transfer changes across **two DIFFERENT repositories or repository setups**.
+
+Specifically handles the real-world workflow where:
+1. **Source Repo**: A monorepo or parent project containing `FE/`, `BE/`, and `file-handler/` side-by-side.
+2. **Destination Repos**: Separate standalone repositories for Frontend and Backend, each containing their own `file-handler/` folder.
 
 ```text
-my-project/
+Source Repository (Monorepo):
+my-monorepo/
 ├── FE/
 ├── BE/
 └── file-handler/
     ├── export_diff.py
+    ├── files_FE.txt  (also generated into FE/files.txt)
+    └── files_BE.txt  (also generated into BE/files.txt)
+
+Destination Repositories (Separate Projects):
+frontend-project/
+├── src/
+├── package.json
+└── file-handler/
     ├── apply_diff.py
-    ├── files_FE.txt  (also FE/files.txt)
-    └── files_BE.txt  (also BE/files.txt)
+    └── files_FE.txt (or files.txt)
+
+backend-project/
+├── src/
+├── package.json
+└── file-handler/
+    ├── apply_diff.py
+    └── files_BE.txt (or files.txt)
 ```
 
 ---
@@ -26,6 +45,8 @@ This guarantees:
 - No Git merge conflicts, index rejections, or pre-image sha mismatch errors.
 - Seamless synchronization between two completely different Git repositories and branches.
 - The target repository does not even need Git installed or initialized.
+- Inside `files_FE.txt`, file paths are scoped relative to the Frontend root (e.g. `src/App.tsx`, not `FE/src/App.tsx`).
+- Inside `files_BE.txt`, file paths are scoped relative to the Backend root (e.g. `src/main.ts`, not `BE/src/main.ts`).
 
 ---
 
@@ -46,9 +67,9 @@ Customizable via flags:
 
 ## Usage
 
-### 1. Export FE and BE packages (`export_diff.py`)
+### 1. Export FE and BE packages from Source (`export_diff.py`)
 
-Run inside the source Git repository:
+Run inside the source Git repository (from `file-handler/` or repo root):
 
 ```bash
 # Provide base (older) commit and target (newer) commit (default targets: FE and BE)
@@ -58,7 +79,7 @@ python export_diff.py <commit_base> <commit_target>
 python export_diff.py HEAD~1 HEAD
 
 # Or specify custom root folders:
-python export_diff.py HEAD~1 HEAD FE BE microservice-c
+python export_diff.py HEAD~1 HEAD FE BE
 ```
 
 Generates:
@@ -67,30 +88,32 @@ Generates:
 
 ---
 
-### 2. Apply packages in target repository (`apply_diff.py`)
+### 2. Apply in Separate Destination Projects (`apply_diff.py`)
 
-Copy the generated `files_FE.txt` and `files_BE.txt` to the target repository.
-
-#### Auto-apply both folders:
-If run without arguments, it auto-discovers all `files_*.txt` in the folder and applies each to its corresponding destination directory:
+#### For Frontend Project:
+Copy `files_FE.txt` into `frontend-project/file-handler/` (or rename to `files.txt`), then run:
 ```bash
+cd frontend-project/file-handler
 python apply_diff.py
 ```
+> **Auto-Targeting**: Because `apply_diff.py` is running inside `file-handler/` and `../FE` does not exist as a subfolder, it automatically targets the parent project directory `..` (`frontend-project`). The files are placed directly into `frontend-project/src/...`.
 
-#### Apply a specific folder package:
+#### For Backend Project:
+Copy `files_BE.txt` into `backend-project/file-handler/` (or rename to `files.txt`), then run:
 ```bash
-# Apply FE changes
-python apply_diff.py files_FE.txt
+cd backend-project/file-handler
+python apply_diff.py
+```
+> **Auto-Targeting**: Automatically targets `..` (`backend-project`), updating `backend-project/src/...` and `package.json`.
 
-# Apply BE changes
-python apply_diff.py files_BE.txt
+#### Optional Flags:
+```bash
+# Explicitly specify target path if desired:
+python apply_diff.py files_FE.txt -t ..
 
-# Explicitly specify a target path
-python apply_diff.py files_FE.txt -t /path/to/target/FE
-
-# Dry-run inspection without modifying files
+# Dry-run inspection without modifying files:
 python apply_diff.py files_FE.txt --check
 
-# Prevent overwriting existing files
+# Prevent overwriting existing files:
 python apply_diff.py files_FE.txt --no-overwrite
 ```

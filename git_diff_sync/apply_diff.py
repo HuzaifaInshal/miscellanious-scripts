@@ -58,6 +58,22 @@ def is_ignored(rel_path: str, ignore_dirs: set[str], ignore_files: set[str]) -> 
     return False
 
 
+def resolve_target_dir(target_arg: str | None) -> Path:
+    """
+    Resolves the destination directory.
+    If target_arg is given, uses it.
+    If running inside a 'file-handler' or 'scripts' directory, defaults to parent directory '..'.
+    Otherwise defaults to current directory '.'.
+    """
+    if target_arg:
+        return Path(target_arg).resolve()
+    current = Path.cwd().resolve()
+    if current.name.lower() in ("file-handler", "file_handler", "scripts"):
+        return current.parent.resolve()
+    return current
+
+
+
 def apply_diff(
     input_file: str = "files.txt",
     target_dir: str = ".",
@@ -271,14 +287,17 @@ def main():
     if args.add_ignore_files:
         ignore_files.update(f.strip() for f in args.add_ignore_files.split(",") if f.strip())
 
+    target_path = resolve_target_dir(args.target if args.target != "." else None)
+
     success = apply_diff(
         input_file=args.input,
-        target_dir=args.target,
+        target_dir=str(target_path),
         check_only=args.check,
         overwrite=not args.no_overwrite,
         ignore_dirs=ignore_dirs,
         ignore_files=ignore_files,
     )
+
 
     if not success:
         sys.exit(1)

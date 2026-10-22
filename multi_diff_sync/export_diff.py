@@ -303,21 +303,39 @@ def export_multi_diff(
 
         # Output targets:
         # 1. files_<folder>.txt in current directory
-        # 2. <folder>/files.txt in current directory (or inside folder directory)
+        # 2. <folder>/files.txt in current directory
+        # 3. Inside the actual folder itself: folder_path / "files.txt"
         out1 = current_dir / f"files_{folder}.txt"
         out2 = current_dir / folder / "files.txt"
 
-        out1.parent.mkdir(parents=True, exist_ok=True)
-        with open(out1, "w", encoding="utf-8") as f:
-            f.write(combined_text)
+        out_list = [out1, out2]
 
-        out2.parent.mkdir(parents=True, exist_ok=True)
-        with open(out2, "w", encoding="utf-8") as f:
-            f.write(combined_text)
+        # Also write directly inside the resolved folder path if it exists
+        if folder_path.exists() and folder_path.is_dir():
+            out3 = folder_path / "files.txt"
+            if out3 not in out_list:
+                out_list.append(out3)
+            # If folder has its own file-handler subfolder
+            if (folder_path / "file-handler").exists():
+                out4 = folder_path / "file-handler" / "files.txt"
+                out5 = folder_path / "file-handler" / f"files_{folder}.txt"
+                out_list.extend([out4, out5])
 
-        generated_files[folder] = [str(out1), str(out2)]
-        print(f"  -> Generated: {out1.name} and {folder}/files.txt")
+        for target_out in out_list:
+            target_out.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_out, "w", encoding="utf-8") as f:
+                f.write(combined_text)
+
+        generated_files[folder] = [str(p) for p in out_list]
+        print(f"  -> Generated: {out1.name}")
+        for p in out_list[1:]:
+            try:
+                rel_display = p.relative_to(git_root).as_posix()
+            except ValueError:
+                rel_display = p.name
+            print(f"     and {rel_display}")
         print(f"     CREATE: {create_count}, DELETE: {delete_count}, Ignored: {ignored_count}\n")
+
 
     print("Diff export complete!")
     return generated_files

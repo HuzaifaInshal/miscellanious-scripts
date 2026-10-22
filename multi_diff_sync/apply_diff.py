@@ -62,35 +62,52 @@ def resolve_target_dir(target_arg: str | None, input_file_path: Path) -> Path:
     """
     Intelligently determines the target directory:
     - If explicitly provided via -t, resolves and uses it.
-    - If input is named 'files_<folder>.txt' (e.g. files_FE.txt):
-        Checks sibling '../<folder>', then child './<folder>'.
-    - If current directory is 'file-handler' or 'scripts':
-        Checks parent '../'.
-    - Defaults to current directory.
+    - Handles standalone separate projects where FE or BE is its own repository:
+        e.g. running from /path/to/BE/file-handler -> targets /path/to/BE
+    - Handles monorepos where FE, BE, and file-handler are siblings:
+        e.g. running from /repo/file-handler with files_FE.txt -> targets /repo/FE
+    - If running from inside 'file-handler' or 'scripts':
+        defaults to parent directory '..'.
+    - Defaults to current directory '.'.
     """
     if target_arg:
         return Path(target_arg).resolve()
 
     current = Path.cwd().resolve()
     filename = input_file_path.name
+    is_in_file_handler = current.name.lower() in ("file-handler", "file_handler", "scripts")
 
     # Check for files_<folder>.txt naming convention
     m = re.match(r"^files_(.+?)\.txt$", filename, re.IGNORECASE)
     if m:
         folder_name = m.group(1)
+
+        # Case A: Standalone project where current directory or parent directory matches folder name
+        # e.g. /my-project/BE/file-handler -> current.parent is 'BE' -> target is /my-project/BE
+        if is_in_file_handler and current.parent.name.upper() == folder_name.upper():
+            return current.parent.resolve()
+        if current.name.upper() == folder_name.upper():
+            return current
+
+        # Case B: Monorepo where FE and BE are sibling directories to file-handler
         candidates = [
-            (current.parent / folder_name).resolve(),
+            (current.parent / folder_name).resolve() if is_in_file_handler else (current / folder_name).resolve(),
             (current / folder_name).resolve(),
         ]
         for c in candidates:
-            if c.exists() and c.is_dir():
+            if c.exists() and c.is_dir() and c != current:
                 return c
 
-    # Check if we are running from file-handler or scripts directory
-    if current.name.lower() in ("file-handler", "file_handler", "scripts"):
+        # Case C: Standalone project named differently (e.g. rwa-backend/file-handler)
+        if is_in_file_handler:
+            return current.parent.resolve()
+
+    # Generic files.txt running from file-handler
+    if is_in_file_handler:
         return current.parent.resolve()
 
     return current
+
 
 
 def apply_single_package(
