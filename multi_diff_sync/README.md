@@ -1,6 +1,6 @@
 # Multi-Folder Git Diff Sync (`multi_diff_sync`)
 
-Designed for projects and monorepos where multiple service folders (like `FE` and `BE`) and a utility folder (`file-handler`) sit side-by-side at the same directory level:
+Designed for projects and monorepos where multiple service folders (like `FE` and `BE`) and a utility folder (`file-handler`) sit side-by-side at the same directory level, specifically to transfer changes across **two DIFFERENT repositories** sharing the same folder structure:
 
 ```text
 my-project/
@@ -15,59 +15,82 @@ my-project/
 
 ---
 
-## What It Does
+## The Two-Operation Architecture: `CREATE` & `DELETE`
 
-1. **File A: `export_diff.py`**
-   - Takes 2 commit hashes (e.g. `HEAD~1` and `HEAD` or full hashes).
-   - Accepts folder names to diff (defaults to `FE` and `BE`).
-   - Automatically scopes the git diff to each root folder and makes file paths inside each diff relative to that specific folder's root.
-   - Outputs separate diffs for each folder:
-     - `files_FE.txt` (and `FE/files.txt`)
-     - `files_BE.txt` (and `BE/files.txt`)
+Instead of relying on fragile Git patch hunks or index pre-image hashes that fail across different repositories, this system uses strictly two operations:
 
-2. **File B: `apply_diff.py`**
-   - Placed inside the destination FE or BE project.
-   - Takes the corresponding diff file (`files.txt`, `files_FE.txt`, etc.).
-   - Applies all creations, modifications, deletions, and binary changes directly to the project.
-   - If placed inside a `file-handler` subfolder within the target project, it automatically applies changes to the parent project directory (`..`).
+1. **`CREATE` (Whole Content)**: If a file is **Added**, **Modified**, or **Renamed**, `export_diff.py` captures the **entire file content** from the target commit. When applied, `apply_diff.py` blatantly overwrites/creates the entire file in the target repository.
+2. **`DELETE`**: If a file is **Deleted** in the source repository, `apply_diff.py` removes the file from the target repository.
+
+This guarantees:
+- No Git merge conflicts, index rejections, or pre-image sha mismatch errors.
+- Seamless synchronization between two completely different Git repositories and branches.
+- The target repository does not even need Git installed or initialized.
+
+---
+
+## Directory & File Ignore Rules
+
+Just like `file_packer`, the scripts automatically exclude non-essential and build directories/files by default:
+
+- **Default Ignored Directories**: `node_modules`, `reports`, `dist`, `.git`, `__pycache__`, `.venv`, `venv`, `build`, `.vscode`, `public`, `.next`
+- **Default Ignored Files**: `package-lock.json`, `test.py`, `files.txt`, `files_FE.txt`, `files_BE.txt`, `final.txt`, `.DS_Store`
+
+Customizable via flags:
+- `--ignore-dirs dir1,dir2`: Override default ignored directories.
+- `--ignore-files file1,file2`: Override default ignored files.
+- `--add-ignore-dirs dir1,dir2`: Add extra directories to ignore without removing defaults.
+- `--add-ignore-files file1,file2`: Add extra files to ignore without removing defaults.
 
 ---
 
 ## Usage
 
-### 1. Generate FE and BE diffs (`export_diff.py`)
+### 1. Export FE and BE packages (`export_diff.py`)
 
-Run inside the source Git repository (either from `file-handler/` or the repo root):
+Run inside the source Git repository:
 
 ```bash
-# Default targets FE and BE
+# Provide base (older) commit and target (newer) commit (default targets: FE and BE)
 python export_diff.py <commit_base> <commit_target>
 
 # Example:
 python export_diff.py HEAD~1 HEAD
 
-# Or specify custom folders:
-python export_diff.py HEAD~1 HEAD FE BE
+# Or specify custom root folders:
+python export_diff.py HEAD~1 HEAD FE BE microservice-c
 ```
 
-If run without arguments, it will prompt for the commit hashes interactively:
+Generates:
+- `files_FE.txt` (and `FE/files.txt`)
+- `files_BE.txt` (and `BE/files.txt`)
+
+---
+
+### 2. Apply packages in target repository (`apply_diff.py`)
+
+Copy the generated `files_FE.txt` and `files_BE.txt` to the target repository.
+
+#### Auto-apply both folders:
+If run without arguments, it auto-discovers all `files_*.txt` in the folder and applies each to its corresponding destination directory:
 ```bash
-python export_diff.py
+python apply_diff.py
 ```
 
-### 2. Apply diffs in target projects (`apply_diff.py`)
-
-Copy the generated `files_FE.txt` (or `FE/files.txt`) and `apply_diff.py` to your target Frontend project:
+#### Apply a specific folder package:
 ```bash
+# Apply FE changes
 python apply_diff.py files_FE.txt
-```
 
-Similarly, copy `files_BE.txt` (or `BE/files.txt`) and `apply_diff.py` to your target Backend project:
-```bash
+# Apply BE changes
 python apply_diff.py files_BE.txt
-```
 
-Options:
-- `-t <path>`: Explicit target directory (e.g. `-t ..` or `-t /path/to/project`)
-- `-c`, `--check`: Dry-run mode to verify changes before applying
-- `-R`, `--reverse`: Reverse-apply the diff
+# Explicitly specify a target path
+python apply_diff.py files_FE.txt -t /path/to/target/FE
+
+# Dry-run inspection without modifying files
+python apply_diff.py files_FE.txt --check
+
+# Prevent overwriting existing files
+python apply_diff.py files_FE.txt --no-overwrite
+```
