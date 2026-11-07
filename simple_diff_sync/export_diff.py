@@ -11,11 +11,21 @@ Designed for projects with a simple adjacent folder structure:
       ├── apply_diff.py
       └── files.txt
 
-Exports git changes between two commits for BE and FE into a SINGLE files.txt
-package inside file-handler/. No separate folders or multiple diff files.
+Exports git changes across BE and FE into a SINGLE files.txt package inside file-handler/.
+No separate folders or multiple diff files.
+
+Supports two export modes:
+1. Commit Diff Mode:
+   - First commit hash is mandatory.
+   - Second commit hash is optional (defaults to HEAD, including all changes till end).
+   - Example: python export_diff.py HEAD~2
+2. Active Changes Mode (-a / --active):
+   - Does NOT require or ask for commit hashes.
+   - Exports all active working tree changes (both tracked staged/unstaged and untracked files).
+   - Example: python export_diff.py -a
 
 Two-Operation Engine:
-1. CREATE: Full file content snapshot for Added, Modified, or Renamed files.
+1. CREATE: Full file content snapshot for Added, Modified, Renamed, or Untracked files.
 2. DELETE: Explicit deletion instructions for Deleted or Renamed files.
 """
 
@@ -48,6 +58,8 @@ DEFAULT_IGNORE_FILES = {
     'files_BE.txt',
     'final.txt',
     '.DS_Store',
+    'export_diff.py',
+    'apply_diff.py',
 }
 
 
@@ -73,6 +85,17 @@ def find_git_root(start_dir: Path) -> Path:
     except Exception as e:
         print(f"Error: Not inside a valid git repository: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def is_valid_git_commit(ref: str, git_root: Path) -> bool:
+    """Checks whether ref resolves to a valid git commit object."""
+    res = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=git_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return res.returncode == 0
 
 
 def resolve_project_root(current_dir: Path, git_root: Path, folders: list[str]) -> Path:
@@ -164,9 +187,28 @@ def get_file_content_at_commit(
         return b64_str, True
 
 
+def get_file_content_from_disk(file_path: Path) -> tuple[str, bool]:
+    """
+    Reads active file content from the local filesystem.
+    Returns (content_string, is_binary).
+    """
+    raw_bytes = file_path.read_bytes()
+
+    if is_binary_bytes(raw_bytes):
+        b64_str = base64.b64encode(raw_bytes).decode("ascii")
+        return b64_str, True
+
+    try:
+        text = raw_bytes.decode("utf-8")
+        return text, False
+    except UnicodeDecodeError:
+        b64_str = base64.b64encode(raw_bytes).decode("ascii")
+        return b64_str, True
+
+
 def export_diff(
     commit_base: str,
-    commit_target: str,
+    commit_target: str = "HEAD",
     folders: list[str] | None = None,
     current_dir: Path | None = None,
     output_file: Path | None = None,
@@ -174,8 +216,11 @@ def export_diff(
     ignore_files: set[str] | None = None,
 ) -> Path:
     """
-    Exports CREATE and DELETE operations across specified folders (BE, FE) into a single files.txt.
+    Exports CREATE and DELETE operations across specified folders (BE, FE) between two commits into a single files.txt.
+    If commit_target is omitted or empty, it defaults to HEAD (including all changes till end).
     """
+    if not commit_target:
+        commit_target = "HEAD"
     if folders is None:
         folders = ["BE", "FE"]
     if ignore_dirs is None:
@@ -204,7 +249,8 @@ def export_diff(
     print(f"Repository Root: {git_root}")
     print(f"Project Root:    {project_root}")
     print(f"Output File:     {final_output_path}")
-    print(f"Comparing '{commit_base}' -> '{commit_target}' across folders: {', '.join(folders)}\n")
+    print(f"Mode:            Commit diff ('{commit_base}' -> '{commit_target}')")
+    print(f"Target Folders:  {', '.join(folders)}\n")
 
     out_content = []
     out_content.append(f"# Simple Diff Sync Package: {', '.join(folders)}\n")
@@ -380,12 +426,200 @@ def export_diff(
         total_deleted += folder_deleted
         total_ignored += folder_ignored
 
-    # Write output to the single files.txt file
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(final_output_path, "w", encoding="utf-8") as f:
         f.write("".join(out_content))
 
     print(f"Done! Diff package saved to: {final_output_path}")
+    print(f"Total Operations -> CREATE: {total_created}, DELETE: {total_deleted}, Ignored: {total_ignored}")
+    return final_output_path
+
+
+def export_active_diff(
+    folders: list[str] | None = None,
+    current_dir: Path | None = None,
+    output_file: Path | None = None,
+    ignore_dirs: set[str] | None = None,
+    ignore_files: set[str] | None = None,
+) -> Path:
+    """
+    Exports all active git changes (both tracked staged/unstaged and untracked files)
+    across the specified folders (BE, FE) into a single files.txt package.
+    Does NOT require or ask for commit hashes.
+    """
+    if folders is None:
+        folders = ["BE", "FE"]
+    if ignore_dirs is None:
+        ignore_dirs = set(DEFAULT_IGNORE_DIRS)
+    if ignore_files is None:
+        ignore_files = set(DEFAULT_IGNORE_FILES)
+
+    if current_dir is None:
+        current_dir = Path.cwd().resolve()
+    else:
+        current_dir = current_dir.resolve()
+
+    git_root = find_git_root(current_dir)
+    project_root = resolve_project_root(current_dir, git_root, folders)
+    final_output_path = output_file if output_file else resolve_output_file(None, current_dir, project_root)
+
+    print(f"Repository Root: {git_root}")
+    print(f"Project Root:    {project_root}")
+    print(f"Output File:     {final_output_path}")
+    print(f"Mode:            Active git changes (tracked + untracked)")
+    print(f"Target Folders:  {', '.join(folders)}\n")
+
+    out_content = []
+    out_content.append(f"# Simple Diff Sync Package: {', '.join(folders)}\n")
+    out_content.append(f"# Mode:          Active changes (tracked + untracked)\n")
+    out_content.append(f"# Operations:    CREATE (whole content), DELETE\n\n")
+
+    total_created = 0
+    total_deleted = 0
+    total_ignored = 0
+
+    for folder in folders:
+        folder_dir = (project_root / folder).resolve()
+
+        try:
+            folder_rel_to_git = folder_dir.relative_to(git_root).as_posix()
+        except ValueError:
+            print(f"Warning: Folder '{folder}' ({folder_dir}) is outside git root. Skipping.", file=sys.stderr)
+            continue
+
+        print(f"=== Processing Active Changes [{folder}] ===")
+
+        # Run git status with untracked files included (-uall)
+        try:
+            status_res = run_git_command(
+                [
+                    "git",
+                    "status",
+                    "--porcelain=v1",
+                    "-uall",
+                    "--",
+                    folder_rel_to_git,
+                ],
+                cwd=git_root,
+            )
+            status_text = status_res.stdout.decode("utf-8", errors="replace")
+        except Exception as e:
+            print(f"  Warning: Could not fetch active git status for '{folder}': {e}", file=sys.stderr)
+            continue
+
+        lines = [l for l in status_text.splitlines() if l.strip()]
+        if not lines:
+            print(f"  No active changes detected in '{folder}'.\n")
+            continue
+
+        folder_created = 0
+        folder_deleted = 0
+        folder_ignored = 0
+
+        for line in lines:
+            status_code = line[:2]
+            rest = line[3:].strip()
+
+            # Handle renames: 'R  old -> new'
+            if "R" in status_code and " -> " in rest:
+                old_part, new_part = rest.split(" -> ", 1)
+                git_old = old_part.strip().strip('"')
+                git_new = new_part.strip().strip('"')
+
+                try:
+                    rel_old = (git_root / git_old).relative_to(project_root).as_posix()
+                except ValueError:
+                    rel_old = git_old
+
+                try:
+                    rel_new = (git_root / git_new).relative_to(project_root).as_posix()
+                except ValueError:
+                    rel_new = git_new
+
+                # Old path is deleted
+                if is_ignored(rel_old, ignore_dirs, ignore_files):
+                    folder_ignored += 1
+                else:
+                    print(f"  [DELETE (renamed from)] {rel_old}")
+                    out_content.append(f"=== DELETE: {rel_old} ===\n\n")
+                    folder_deleted += 1
+
+                # New path is created
+                if is_ignored(rel_new, ignore_dirs, ignore_files):
+                    folder_ignored += 1
+                else:
+                    new_abs = git_root / git_new
+                    if new_abs.is_file():
+                        try:
+                            content_str, is_bin = get_file_content_from_disk(new_abs)
+                            if is_bin:
+                                print(f"  [CREATE (binary renamed to)] {rel_new}")
+                                out_content.append(f"=== CREATE_BASE64: {rel_new} ===\n")
+                                out_content.append(content_str)
+                                out_content.append("\n\n")
+                            else:
+                                print(f"  [CREATE (text renamed to)]   {rel_new}")
+                                out_content.append(f"=== CREATE: {rel_new} ===\n")
+                                out_content.append(content_str)
+                                if not content_str.endswith("\n"):
+                                    out_content.append("\n")
+                                out_content.append("\n")
+                            folder_created += 1
+                        except Exception as e:
+                            print(f"  [ERROR] Could not read active file '{new_abs}': {e}", file=sys.stderr)
+                continue
+
+            git_path = rest.strip('"')
+            if not git_path:
+                continue
+
+            abs_path = git_root / git_path
+            try:
+                rel_path = abs_path.relative_to(project_root).as_posix()
+            except ValueError:
+                rel_path = git_path
+
+            if is_ignored(rel_path, ignore_dirs, ignore_files):
+                folder_ignored += 1
+                continue
+
+            # Check if file was deleted (status code contains 'D' or no longer exists on disk)
+            if "D" in status_code or not abs_path.exists():
+                print(f"  [DELETE] {rel_path}")
+                out_content.append(f"=== DELETE: {rel_path} ===\n\n")
+                folder_deleted += 1
+            elif abs_path.is_file():
+                # Added (A), Untracked (??), or Modified (M)
+                try:
+                    content_str, is_bin = get_file_content_from_disk(abs_path)
+                except Exception as e:
+                    print(f"  [ERROR] Could not read active file '{abs_path}': {e}", file=sys.stderr)
+                    continue
+
+                if is_bin:
+                    print(f"  [CREATE (binary)] {rel_path}")
+                    out_content.append(f"=== CREATE_BASE64: {rel_path} ===\n")
+                    out_content.append(content_str)
+                    out_content.append("\n\n")
+                else:
+                    print(f"  [CREATE (text)]   {rel_path}")
+                    out_content.append(f"=== CREATE: {rel_path} ===\n")
+                    out_content.append(content_str)
+                    if not content_str.endswith("\n"):
+                        out_content.append("\n")
+                    out_content.append("\n")
+                folder_created += 1
+
+        print(f"  [{folder} Summary] CREATE: {folder_created}, DELETE: {folder_deleted}, Ignored: {folder_ignored}\n")
+        total_created += folder_created
+        total_deleted += folder_deleted
+        total_ignored += folder_ignored
+
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_output_path, "w", encoding="utf-8") as f:
+        f.write("".join(out_content))
+
+    print(f"Done! Active diff package saved to: {final_output_path}")
     print(f"Total Operations -> CREATE: {total_created}, DELETE: {total_deleted}, Ignored: {total_ignored}")
     return final_output_path
 
@@ -397,18 +631,32 @@ def main():
     parser.add_argument(
         "commit1",
         nargs="?",
-        help="Base / older commit hash or reference (e.g. HEAD~1, main)",
+        default=None,
+        help="Base / older commit hash (mandatory unless -a / --active is specified)",
     )
     parser.add_argument(
         "commit2",
         nargs="?",
-        help="Target / newer commit hash or reference (e.g. HEAD, feature-branch)",
+        default=None,
+        help="Target / newer commit hash (default: HEAD, including all commits till end)",
     )
     parser.add_argument(
         "folders",
         nargs="*",
-        default=["BE", "FE"],
+        default=None,
         help="Adjacent folders to diff (default: BE FE)",
+    )
+    parser.add_argument(
+        "-a",
+        "--active",
+        action="store_true",
+        help="Export all active git changes (tracked and untracked) in working tree without commit hashes",
+    )
+    parser.add_argument(
+        "--folders",
+        dest="flag_folders",
+        nargs="+",
+        help="Explicit adjacent folders list (e.g. --folders BE FE)",
     )
     parser.add_argument(
         "-o",
@@ -435,19 +683,6 @@ def main():
 
     args = parser.parse_args()
 
-    commit1 = args.commit1
-    commit2 = args.commit2
-    folders = args.folders if args.folders else ["BE", "FE"]
-
-    if not commit1:
-        commit1 = input("Enter base / older commit hash (e.g. HEAD~1): ").strip()
-    if not commit2:
-        commit2 = input("Enter target / newer commit hash (e.g. HEAD): ").strip()
-
-    if not commit1 or not commit2:
-        print("Error: Both commit hashes must be provided.", file=sys.stderr)
-        sys.exit(1)
-
     ignore_dirs = set(DEFAULT_IGNORE_DIRS)
     if args.ignore_dirs:
         ignore_dirs = {d.strip() for d in args.ignore_dirs.split(",") if d.strip()}
@@ -461,6 +696,57 @@ def main():
         ignore_files.update(f.strip() for f in args.add_ignore_files.split(",") if f.strip())
 
     output_path = Path(args.output).resolve() if args.output else None
+
+    # MODE 1: Active Changes (-a / --active)
+    if args.active:
+        # Determine folders for active mode
+        if args.flag_folders:
+            folders = args.flag_folders
+        else:
+            # If positional arguments were supplied with -a (e.g. export_diff.py -a BE FE)
+            pos = [f for f in [args.commit1, args.commit2] + (args.folders or []) if f]
+            folders = pos if pos else ["BE", "FE"]
+
+        export_active_diff(
+            folders=folders,
+            output_file=output_path,
+            ignore_dirs=ignore_dirs,
+            ignore_files=ignore_files,
+        )
+        return
+
+    # MODE 2: Commit Diff Mode
+    commit1 = args.commit1
+    commit2 = args.commit2
+    raw_folders = args.folders or []
+
+    if not commit1:
+        # Prompt interactively
+        commit1 = input("Enter base / older commit hash (mandatory, e.g. HEAD~1, main): ").strip()
+        if not commit1:
+            print("Error: Base commit hash is mandatory (or run with -a / --active for active uncommitted changes).", file=sys.stderr)
+            sys.exit(1)
+
+        commit2_input = input("Enter target / newer commit hash [default: HEAD]: ").strip()
+        commit2 = commit2_input if commit2_input else "HEAD"
+    else:
+        # commit1 was provided via CLI.
+        # Check if commit2 was provided or if it is actually a folder name
+        # (e.g. python export_diff.py HEAD~1 BE FE)
+        git_root = find_git_root(Path.cwd())
+        if commit2 is not None:
+            if not is_valid_git_commit(commit2, git_root):
+                raw_folders = [commit2] + raw_folders
+                commit2 = "HEAD"
+        else:
+            commit2 = "HEAD"
+
+    if args.flag_folders:
+        folders = args.flag_folders
+    elif raw_folders:
+        folders = raw_folders
+    else:
+        folders = ["BE", "FE"]
 
     export_diff(
         commit_base=commit1,
